@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # coding=utf-8
 
+import argparse
 import os, requests
 from bs4 import BeautifulSoup
 import gevent
@@ -8,8 +9,6 @@ from gevent import monkey
 monkey.patch_socket()
 import time, re, random, queue
 
-
-import mysql.connector
 
 here = os.path.abspath(os.path.dirname(__file__))
 pic_dir = os.path.join(here, 'ali213')
@@ -19,10 +18,7 @@ if not os.path.exists(pic_dir):
 
 chapter_base_url = 'http://manhua.fhxxw.cn/comic/6122'
 
-sleep_time = 2
-
-qsize = 8192
-sql_stmt_queue = queue.Queue()
+sleep_time = 1
 
 headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -33,25 +29,24 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36',
 }
 
-end = 0xABCD
 
 def get_whole_ali213_chapter_index():
     url = 'http://manhua.fhxxw.cn/list/0-0-0-0-0-0-%s.html'
-    pagenum = 448
-    threads = []
-    for i in range(1, pagenum+1):
+    pageNum = 448
+    for i in range(1,pageNum+1):
         t = url % i
-        threads.append(gevent.spawn(get_ali213_curpage_index, t))
-
-    gevent.joinall(threads)
-    sql_stmt_queue.put(end)
-
-
+        code = get_ali213_curpage_index(t)
+        if code == 1:
+            return
+        i+=1
 
 def get_ali213_curpage_index(chapter_url):
-    gevent.sleep(random.randint(1,sleep_time))
     req = requests.get(chapter_url, headers = headers)
-    soup = BeautifulSoup(req.text)
+    if req.status_code != requests.codes.ok:
+        return 1
+    
+    soup = BeautifulSoup(req.text,"html.parser")
+    req.close()
     threads = []
     base_url = 'http://manhua.fhxxw.cn'
     dict = {}
@@ -65,57 +60,30 @@ def get_ali213_curpage_index(chapter_url):
             print('FUCK')
             continue
     for (k,v) in dict.items():
-        sql_stmt = 'insert into ali213_manga_chapter' \
-                   ' values (\'{}\',\'{}\')'.format(k, v)
-        print(sql_stmt)
-        sql_stmt_queue.put(sql_stmt)
-    print('one thread is complete!')
-    return
-
-def insert_mangainfo_to_db():
-    conn = mysql.connector.connect(host = 'localhost', user = 'root', passwd = '852456', db = 'manga')
-    cursor = conn.cursor()
-    while True:
-        print("insert_mangainfo_to_db")
-        if sql_stmt_queue.empty():
-            gevent.sleep(sleep_time)
-            continue
-        sql_stmt = sql_stmt_queue.get_nowait()
-        if sql_stmt == end:
-            print("everything is done!")
-            conn.close()
-            return
-        print('sql stmt ' +  sql_stmt)
-        try:
-            cursor.execute(sql_stmt)
-            conn.commit()
-        except mysql.connector.Error as e:
-            if e.errno == 1062:
-                print(e)
-                continue
-    conn.close()
+        print(v,":",k)
+    return 0
 
 def get_chapters_ali213(chapter_url):
     base_url_ali213 = 'http://manhua.fhxxw.cn'
     req = requests.get(chapter_url)
-    soup = BeautifulSoup(req.text)
+    soup = BeautifulSoup(req.text,"html.parser")
     threads = []
     chapterset = set()
     for li in soup.findAll('li'):
         try:
             title = li.a.get('title').encode('iso8859-1').decode('utf-8')
             print(title)
-            if title not in chapterset:
-                chapterset.add(title)
-                url = '%s%s' % (base_url_ali213, li.a.get('href'))
-                threads.append(gevent.spawn(download_chapters_ali213, title, url))
-            else:
-                print('already in the chapterset!')
-                continue
         except:
-            print ('fuck! some problem happen')
             continue
-    gevent.joinall(threads)
+        if title not in chapterset:
+            chapterset.add(title)
+            url = '%s%s' % (base_url_ali213, li.a.get('href'))
+            print(url)
+            threads.append(gevent.spawn(download_chapters_ali213, title, url))
+        else:
+            print('already in the chapterset!')
+            continue
+        gevent.joinall(threads)
 
 def download_chapters_ali213(title, url):
     print ('download_chapters...... %s:%s' % (title, url))
@@ -127,11 +95,11 @@ def download_chapters_ali213(title, url):
     chapter_dir = os.path.join(pic_dir, title)
     if not os.path.exists(chapter_dir):
         os.mkdir(chapter_dir)
-    chapter_sub_url = url[:-5]
-    time.sleep(sleep_time)
-    content = requests.get(url).text
-    searchObj = re.search(r'var imgpath=\'(.*)\'', content)
-    pageNum = int(re.search(r'var pages=(.*);', content).group(1))
+        chapter_sub_url = url[:-5]
+        time.sleep(sleep_time)
+        content = requests.get(url).text
+        searchObj = re.search(r'var imgpath=\'(.*)\'', content)
+        pageNum = int(re.search(r'var pages=(.*);', content).group(1))
     if searchObj:
         img_url = baseurl + searchObj.group(1)
         temp = img_url
@@ -139,7 +107,9 @@ def download_chapters_ali213(title, url):
         img_url = temp + '%d' % i + '.jpg'
         file_name = os.path.join(chapter_dir, '%s.jpg' % i)
         gevent.spawn(save_pic_ali213, file_name, img_url).join()
+        print('progress...%s [%d/%d]'%(title,i,pageNum))
     print('chapter %s is complete!' % title)
+    return
 
 
 def save_pic_ali213(file_name, url):
@@ -160,23 +130,28 @@ def save_pic_ali213(file_name, url):
                     f.write(chunk)
             return
         else:
+            print("get pic failed, code is : ", resp.status_code)
             fail_count += 1
-            if fail_count >= 20:
+            ##retry 3 times
+            if fail_count >= 3:
                 print("failed to get the pic at last!")
                 return
-            print ('error', resp)
             time.sleep(sleep_time)
-            print('try again!')
 
 def main():
-    #get_ali213_curpage_index('http://manhua.fhxxw.cn/list/0-0-0-0-0-0-1.html')
-    main_threads = []
-    main_threads.append(gevent.spawn(insert_mangainfo_to_db))
-    main_threads.append(gevent.spawn(get_whole_ali213_chapter_index))
-    #insert_mangainfo_to_db()
-    #get_whole_ali213_chapter_index()
-    gevent.joinall(main_threads)
-    #get_chapters_ali213('http://manhua.fhxxw.cn/comic/13800')
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--chapter",help="download chapter")
+    parser.add_argument("--index",type=int,help="get all comic index")
+    args = parser.parse_args()
+
+    if args.chapter:
+        if args.chapter == "default":
+            get_chapters_ali213('http://manhua.fhxxw.cn/comic/13800')            
+        else:
+            get_chapters_ali213(args.chapter)            
+    if args.index:
+        get_whole_ali213_chapter_index()
+
 
 if __name__ == '__main__':
     main()
