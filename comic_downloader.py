@@ -15,7 +15,6 @@ pic_dir = os.path.join(here, 'ali213')
 if not os.path.exists(pic_dir):
     os.mkdir(pic_dir)
 
-
 chapter_base_url = 'http://manhua.fhxxw.cn/comic/6122'
 
 sleep_time = 1
@@ -31,7 +30,8 @@ headers = {
 
 
 def get_whole_ali213_chapter_index():
-    url = 'http://manhua.fhxxw.cn/list/0-0-0-0-0-0-%s.html'
+    ##sort by hits rate
+    url = 'http://manhua.fhxxw.cn/list/0-0-0-0-2-1-%s.html'
     pageNum = 448
     for i in range(1,pageNum+1):
         t = url % i
@@ -63,8 +63,8 @@ def get_ali213_curpage_index(chapter_url):
         print(v,":",k)
     return 0
 
-def get_chapters_ali213(chapter_url):
-    base_url_ali213 = 'http://manhua.fhxxw.cn'
+def get_chapters_ali213(chapter_url,chapter_name):
+    base_url = 'http://manhua.fhxxw.cn'
     req = requests.get(chapter_url)
     soup = BeautifulSoup(req.text,"html.parser")
     threads = []
@@ -77,50 +77,47 @@ def get_chapters_ali213(chapter_url):
             continue
         if title not in chapterset:
             chapterset.add(title)
-            url = '%s%s' % (base_url_ali213, li.a.get('href'))
-            print(url)
-            threads.append(gevent.spawn(download_chapters_ali213, title, url))
+            url = '%s%s' % (base_url, li.a.get('href'))
+            download_chapters_ali213(chapter_name, title,url)
         else:
-            print('already in the chapterset!')
             continue
-        gevent.joinall(threads)
+    req.close()
 
-def download_chapters_ali213(title, url):
+def download_chapters_ali213(chaper_name,title, url):
     print ('download_chapters...... %s:%s' % (title, url))
     baseurl = 'http://manhua.fhxxw.cn'
     #delay some seconds preventing banned by the host
     threads = []
     map = {}
     map[title] = 'unfinished'
-    chapter_dir = os.path.join(pic_dir, title)
+    book_dir = os.path.join(pic_dir,chaper_name)
+    if not os.path.exists(book_dir):
+        os.mkdir(book_dir)
+    chapter_dir = os.path.join(book_dir,title)
     if not os.path.exists(chapter_dir):
         os.mkdir(chapter_dir)
-        chapter_sub_url = url[:-5]
-        time.sleep(sleep_time)
-        content = requests.get(url).text
-        searchObj = re.search(r'var imgpath=\'(.*)\'', content)
-        pageNum = int(re.search(r'var pages=(.*);', content).group(1))
+
+    chapter_sub_url = url[:-5]
+    content = requests.get(url).text
+    searchObj = re.search(r'var imgpath=\'(.*)\'', content)
+    pageNum = int(re.search(r'var pages=(.*);', content).group(1))
     if searchObj:
         img_url = baseurl + searchObj.group(1)
         temp = img_url
     for i in range(0, pageNum):
         img_url = temp + '%d' % i + '.jpg'
         file_name = os.path.join(chapter_dir, '%s.jpg' % i)
-        gevent.spawn(save_pic_ali213, file_name, img_url).join()
-        print('progress...%s [%d/%d]'%(title,i,pageNum))
+        gevent.spawn(save_pic_ali213,title,i,pageNum, file_name, img_url).join()
     print('chapter %s is complete!' % title)
     return
 
 
-def save_pic_ali213(file_name, url):
-    time.sleep(sleep_time)
+def save_pic_ali213(title,position,pageNum,file_name, url):
     print ('save_pic......', file_name, url)
     if os.path.exists(file_name):
         print('already exists in the dir')
         return
     img_url = url
-    print ('img_url', img_url)
-
     fail_count = 0
     while(1):
         resp = requests.get(img_url, headers=headers, stream=True)
@@ -128,27 +125,32 @@ def save_pic_ali213(file_name, url):
             with open(file_name, 'wb') as f:
                 for chunk in resp.iter_content(1024):
                     f.write(chunk)
+            print('progress...%s [%d/%d]'%(title,position,pageNum))
+            resp.close()
             return
         else:
             print("get pic failed, code is : ", resp.status_code)
+            resp.close()
+            time.sleep(sleep_time)
             fail_count += 1
             ##retry 3 times
             if fail_count >= 3:
                 print("failed to get the pic at last!")
                 return
-            time.sleep(sleep_time)
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--chapter",help="download chapter")
+    parser.add_argument("--name",help="chapter name")
     parser.add_argument("--index",type=int,help="get all comic index")
     args = parser.parse_args()
 
     if args.chapter:
         if args.chapter == "default":
-            get_chapters_ali213('http://manhua.fhxxw.cn/comic/13800')            
+            get_chapters_ali213('http://manhua.fhxxw.cn/comic/13800','test')            
         else:
-            get_chapters_ali213(args.chapter)            
+            get_chapters_ali213(args.chapter,args.name)            
     if args.index:
         get_whole_ali213_chapter_index()
 
